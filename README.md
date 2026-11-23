@@ -6,7 +6,7 @@
 
 **Multi-host ping, drawn as smooth live curves on a 3D perspective graph.**
 
-[![release](https://img.shields.io/github/v/release/lockewerks/Pingy-Native?style=flat-square&color=d6262a)](https://github.com/lockewerks/Pingy-Native/releases)
+[![release](https://img.shields.io/github/v/release/Locke-Werks/Pingy-Native?style=flat-square&color=d6262a)](https://github.com/Locke-Werks/Pingy-Native/releases)
 [![license](https://img.shields.io/badge/license-GPLv3-d6262a?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-d6262a?style=flat-square)](#requirements)
 

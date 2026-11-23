@@ -5,8 +5,8 @@ edition = "2024"
 description = "Real-time multi-host ping visualizer with a 3D perspective latency graph"
 license = "GPL-3.0-or-later"
 authors = ["Locke Werks <archon@lockewerks.com>"]
-repository = "https://github.com/lockewerks/Pingy-Native"
-homepage = "https://github.com/lockewerks/Pingy-Native"
+repository = "https://github.com/Locke-Werks/Pingy-Native"
+homepage = "https://github.com/Locke-Werks/Pingy-Native"
 readme = "README.md"
 build = "build.rs"
 

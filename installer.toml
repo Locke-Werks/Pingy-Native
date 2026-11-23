@@ -4,7 +4,7 @@ version      = "2.0.0"
 publisher    = "Locke Werks"
 description  = "Real-time network ping visualizer. 3D perspective graph."
 copyright    = "Copyright (c) 2026 Locke Werks"
-url          = "https://github.com/lockewerks/Pingy-Native"
+url          = "https://github.com/Locke-Werks/Pingy-Native"
 # Stable across versions. Upgrade detection and the single-instance mutex key off
 # this, so changing it makes an upgrade look like a fresh product.
 upgrade_code = "ef30e1aa-84ad-4e61-8839-193ec66fb747"
