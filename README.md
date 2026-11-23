@@ -7,7 +7,7 @@
 **Multi-host ping, drawn as smooth live curves on a 3D perspective graph.**
 
 [![release](https://img.shields.io/github/v/release/lockewerks/Pingy-Native?style=flat-square&color=d6262a)](https://github.com/lockewerks/Pingy-Native/releases)
-[![license](https://img.shields.io/badge/license-MIT-d6262a?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-GPLv3-d6262a?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-d6262a?style=flat-square)](#requirements)
 
 </div>
@@ -104,4 +104,4 @@ The version lives in `Cargo.toml`, `installer.toml` and `packaging/macos/Info.pl
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).

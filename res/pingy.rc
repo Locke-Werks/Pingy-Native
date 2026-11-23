@@ -22,7 +22,7 @@ BEGIN
             VALUE "OriginalFilename", "pingy.exe"
             VALUE "ProductName",      "Pingy"
             VALUE "ProductVersion",   "@VER@"
-            VALUE "LegalCopyright",   "Copyright (c) 2026 Locke Werks. MIT License."
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Locke Werks. GPL-3.0-or-later."
         END
     END
     BLOCK "VarFileInfo"
