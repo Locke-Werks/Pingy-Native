@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pingy
+GenericName=Ping Monitor
+Comment=Real-time multi-host ping visualizer
+Exec=pingy
+Icon=pingy
+Terminal=false
+Categories=Network;Monitor;Utility;
+Keywords=ping;latency;network;icmp;
+StartupWMClass=pingy

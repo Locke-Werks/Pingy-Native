@@ -4,52 +4,76 @@ on:
   push:
     tags: ['v*']
 
-jobs:
-  release:
-    runs-on: windows-latest
-    environment: release
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
+env:
+  # Pinned so a Forge release cannot change what this job produces without a
+  # commit here. v0.4.1 knows every key installer.toml uses.
+  FORGE_VERSION: v0.4.1
+  QT_VERSION: 6.8.3
 
-      # A tag that disagrees with any of the version declarations ships an
-      # installer whose ARP entry, the exe's Details tab and the release page
-      # each claim something different.
+jobs:
+  # Everything else waits on this, so a tag that disagrees with the declared
+  # version fails in seconds instead of after four platform builds.
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
       - name: Check the tag and metadata declarations agree
         shell: pwsh
         run: ./scripts/Check-Metadata.ps1 -Tag '${{ github.ref_name }}'
 
-      - name: Build
+      - id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: metadata
+    runs-on: windows-latest
+    environment: release
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          modules: qtshadertools
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Build and test
         shell: pwsh
         run: |
-          # build.bat exits 1 on failure, but pwsh only surfaces the last
-          # command's code, so check it explicitly. Clearing the target first
-          # means a stale exe cannot pass for a fresh one.
-          Remove-Item build/Pingy.exe -ErrorAction SilentlyContinue
-
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $install = & $vswhere -latest -products * `
-                                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-                                -property installationPath
-          if (-not $install) { throw 'no Visual Studio installation with the C++ x64 toolset' }
-
-          $vcvars = Join-Path $install 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "call `"$vcvars`" >nul 2>&1 && call build.bat"
-          if ($LASTEXITCODE -ne 0) { throw "build.bat exited $LASTEXITCODE" }
-
-          if (-not (Test-Path build/Pingy.exe)) { throw 'build produced no build/Pingy.exe' }
+          $env:QMAKE = "$env:QT_ROOT_DIR\bin\qmake.exe"
+          # A stale exe from a cache cannot pass for a fresh one.
+          Remove-Item target/release/pingy.exe -ErrorAction SilentlyContinue
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo build exited $LASTEXITCODE" }
+          cargo test --release --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo test exited $LASTEXITCODE" }
+          if (-not (Test-Path target/release/pingy.exe)) { throw 'build produced no target/release/pingy.exe' }
 
       # Everything under stage/ lands on the customer's disk byte for byte.
       - name: Stage the payload
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path stage | Out-Null
-          Copy-Item build/Pingy.exe stage/
+          Copy-Item target/release/pingy.exe, LICENSE stage/
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations `
+            --qmldir qml stage/pingy.exe
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt exited $LASTEXITCODE" }
+          # QtQuick without its platform plugin starts and shows nothing.
+          if (-not (Test-Path stage/platforms/qwindows.dll)) { throw 'windeployqt left out platforms/qwindows.dll' }
+          if (-not (Test-Path stage/qml/QtQuick/Controls)) { throw 'windeployqt left out QtQuick.Controls' }
 
       # Before forging. Forge hashes payload members into the container and
       # extracts them verbatim, so an unsigned binary going in stays unsigned on
-      # the installed machine. Signing the finished installer does nothing here.
+      # the installed machine. The Qt DLLs are signed too: an unsigned DLL in
+      # Program Files is what SmartScreen and EDR tools flag first.
       - name: Sign the payload
         uses: azure/trusted-signing-action@v0
         with:
@@ -60,7 +84,7 @@ jobs:
           trusted-signing-account-name: specterpoint
           certificate-profile-name: specterpoint
           files-folder: stage
-          files-folder-filter: exe
+          files-folder-filter: exe,dll
           files-folder-recurse: true
           file-digest: SHA256
           # Certificates are valid for three days. Without the timestamp the
@@ -76,7 +100,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v0.4.0 --repo Locke-Werks/Forge --pattern '*.exe' --dir tools
+          gh release download $env:FORGE_VERSION --repo Locke-Werks/Forge --pattern '*.exe' --dir tools
           foreach ($name in 'lwforge.exe', 'lwstub.exe') {
             $sig = Get-AuthenticodeSignature "tools/$name"
             "$name : $($sig.Status)"
@@ -93,7 +117,7 @@ jobs:
             --config installer.toml `
             --payload stage `
             --stub tools/lwstub.exe `
-            --out dist/Pingy-Setup.exe
+            --out "dist/Pingy-Setup-$env:VERSION.exe"
           if ($LASTEXITCODE -ne 0) { throw "forge exited $LASTEXITCODE" }
 
       # Last, after resource stamping and the container append have already
@@ -118,17 +142,19 @@ jobs:
         run: |
           # The action exiting zero is not the same as the file being signed.
           # This catches a silently skipped folder or a wrong folder filter.
-          $sig = Get-AuthenticodeSignature dist/Pingy-Setup.exe
+          $setup = "dist/Pingy-Setup-$env:VERSION.exe"
+          $sig = Get-AuthenticodeSignature $setup
           "installer: $($sig.Status)  $($sig.SignerCertificate.Subject)"
           if ($sig.Status -ne 'Valid') { throw "installer is $($sig.Status)" }
 
-          $payload = Get-AuthenticodeSignature stage/Pingy.exe
-          "payload:   $($payload.Status)"
-          if ($payload.Status -ne 'Valid') { throw "payload Pingy.exe is $($payload.Status)" }
+          $unsigned = @(Get-ChildItem stage -Recurse -Include *.exe, *.dll |
+                        Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' })
+          "payload:   $(@(Get-ChildItem stage -Recurse -Include *.exe, *.dll).Count) binaries, $($unsigned.Count) unsigned"
+          if ($unsigned.Count) { throw "unsigned payload binaries: $($unsigned.Name -join ', ')" }
 
           # Signing appended a certificate table after the container. This proves
           # it did not orphan the payload, and it is the check people leave out.
-          ./tools/lwforge.exe inspect dist/Pingy-Setup.exe
+          ./tools/lwforge.exe inspect $setup
           if ($LASTEXITCODE -ne 0) { throw 'the signed installer cannot read its own container' }
 
       - name: Verify the option surface
@@ -138,9 +164,9 @@ jobs:
           # a /O: switch the installer no longer declares shows up. The stub is a
           # GUI-subsystem binary, so wait on the process rather than the pipe:
           # a shell that does not wait reads a stale exit code.
-          $setup = (Resolve-Path dist/Pingy-Setup.exe).Path
+          $setup = (Resolve-Path "dist/Pingy-Setup-$env:VERSION.exe").Path
           $p = Start-Process -FilePath $setup `
-                             -ArgumentList '--check-only', '/O:add_to_path=off' -PassThru
+                             -ArgumentList '--check-only', '/O:add_to_path=off', '/O:desktop_shortcut=off' -PassThru
           if (-not $p.WaitForExit(60000)) {
             $p.Kill()
             throw '--check-only did not exit within 60s'
@@ -148,28 +174,289 @@ jobs:
           "--check-only exit: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "--check-only exited $($p.ExitCode)" }
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/Pingy-Setup-*.exe
+          if-no-files-found: error
+
+  deb:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      # System Qt, so the package depends on the distribution's Qt rather than
+      # carrying its own.
+      QMAKE: /usr/lib/qt6/bin/qmake
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgl-dev \
+            qt6-base-dev qt6-declarative-dev qt6-shader-baker \
+            qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript qml6-module-qtquick-templates
+
+      - name: Build and test
+        run: |
+          cargo build --release --locked
+          cargo test --release --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          cargo install cargo-deb --locked
+          cargo deb --no-build
+          debs=(target/debian/*.deb)
+          [ ${#debs[@]} -eq 1 ] || { echo "expected one .deb, got ${#debs[@]}"; exit 1; }
+          # cargo-deb appends a revision; the release names the upstream version only.
+          mkdir -p dist
+          cp "${debs[0]}" "dist/pingy_${VERSION}_amd64.deb"
+          dpkg-deb --info "dist/pingy_${VERSION}_amd64.deb"
+          dpkg-deb --contents "dist/pingy_${VERSION}_amd64.deb"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  rpm:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    container: fedora:41
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      QMAKE: /usr/lib64/qt6/bin/qmake
+    steps:
+      - name: System packages
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc-c++ make curl git mesa-libGL-devel libcap \
+            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtshadertools-devel
+
+      - uses: actions/checkout@v7
+
+      # Fedora's packaged rust trails stable; the app pins nothing older.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and test
+        run: |
+          cargo build --release --locked
+          cargo test --release --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm
+          rpms=(target/generate-rpm/*.rpm)
+          [ ${#rpms[@]} -eq 1 ] || { echo "expected one .rpm, got ${#rpms[@]}"; exit 1; }
+          mkdir -p dist
+          cp "${rpms[0]}" "dist/pingy-${VERSION}-1.x86_64.rpm"
+          rpm -qip "dist/pingy-${VERSION}-1.x86_64.rpm"
+          rpm -qlp "dist/pingy-${VERSION}-1.x86_64.rpm"
+          rpm -qp --scripts "dist/pingy-${VERSION}-1.x86_64.rpm"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  # arm64 only: macos-26 is Apple Silicon, and a universal binary would need a
+  # second Rust target plus a universal Qt. Intel Macs are not served.
+  macos:
+    needs: metadata
+    runs-on: macos-26
+    environment: release
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      SIGN_ID: 'Developer ID Application: Joseph Hancuff (KVJL9RB8BY)'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          modules: qtshadertools
+          version: ${{ env.QT_VERSION }}
+          cache: true
+
+      # Ephemeral keychain, destroyed at the end. On a runner login.keychain is
+      # locked and there is no GUI to unlock it.
+      - name: Import Developer ID certificate
+        env:
+          P12_B64: ${{ secrets.DEVELOPER_ID_APP_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APP_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PW="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PW"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PW=$KEYCHAIN_PW" >> "$GITHUB_ENV"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Without Apple's intermediates codesign fails errSecInternalComponent,
+          # which looks like a bad certificate and is not one.
+          for ca in AppleWWDRCAG3 DeveloperIDG2CA AppleRootCA-G3; do
+            curl -fsSL -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN"
+          done
+          printf '%s' "$P12_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this codesign waits forever on a prompt nobody can answer.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" > /dev/null
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      # Qt 6.8.3's qyieldcpu.h calls __yield without including <arm_acle.h>, and
+      # the Xcode on macos-26 rejects the implicit declaration. It also still
+      # links Apple's AGL framework, which the macOS 26 SDK no longer has.
+      - name: macOS compiler workaround
+        run: |
+          echo "CXXFLAGS=-include arm_acle.h" >> "$GITHUB_ENV"
+          grep -rlI -- '-framework AGL' "$QT_ROOT_DIR/mkspecs" "$QT_ROOT_DIR/lib" 2>/dev/null \
+            | while read -r f; do sed -i '' 's/-framework AGL//g' "$f"; done
+          ! grep -rqI -- '-framework AGL' "$QT_ROOT_DIR/mkspecs" "$QT_ROOT_DIR/lib"
+
+      - name: Build and test
+        run: |
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          cargo build --release --locked
+          cargo test --release --locked
+
+      - name: Bundle
+        run: |
+          set -euo pipefail
+          app=Pingy.app
+          rm -rf "$app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/pingy "$app/Contents/MacOS/pingy"
+          cp packaging/macos/Info.plist "$app/Contents/Info.plist"
+          # Every size Finder and the Dock ask for, from the one PNG master.
+          set=pingy.iconset
+          rm -rf "$set" && mkdir "$set"
+          for s in 16 32 128 256 512; do
+            sips -z $s $s assets/pingy.png --out "$set/icon_${s}x${s}.png" > /dev/null
+            d=$((s * 2))
+            sips -z $d $d assets/pingy.png --out "$set/icon_${s}x${s}@2x.png" > /dev/null
+          done
+          iconutil -c icns "$set" -o "$app/Contents/Resources/pingy.icns"
+          "$QT_ROOT_DIR/bin/macdeployqt" "$app" -qmldir=qml -always-overwrite
+          test -d "$app/Contents/Frameworks/QtQuick.framework"
+
+      # Inside out, because signing a bundle seals what is already inside it and
+      # --deep signs nested code with the outer bundle's options. --options
+      # runtime and --timestamp are both required for notarization.
+      - name: Sign
+        run: |
+          set -euo pipefail
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          sign() { codesign --keychain "$KEYCHAIN" -s "$SIGN_ID" --options runtime --timestamp -f "$@"; }
+          find Pingy.app/Contents/Frameworks Pingy.app/Contents/PlugIns Pingy.app/Contents/Resources/qml \
+            -type f \( -name '*.dylib' -o -perm -u+x \) 2>/dev/null | while read -r f; do
+            if file "$f" | grep -q 'Mach-O'; then sign "$f"; fi
+          done
+          for fw in Pingy.app/Contents/Frameworks/*.framework; do sign "$fw"; done
+          sign --entitlements packaging/macos/entitlements.plist Pingy.app
+          codesign --verify --deep --strict --verbose=2 Pingy.app
+
+      - name: Notarize, staple and package
+        env:
+          ASC_KEY_B64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ASC_KEY_B64" | base64 -d > "$RUNNER_TEMP/asc.p8"
+          trap 'rm -f "$RUNNER_TEMP/asc.p8"' EXIT
+          notarize() {
+            xcrun notarytool submit "$1" --key "$RUNNER_TEMP/asc.p8" \
+              --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --timeout 30m
+          }
+          # The app is notarized and stapled on its own first, so the copy a
+          # user drags out of the image launches offline as well.
+          ditto -c -k --sequesterRsrc --keepParent Pingy.app "$RUNNER_TEMP/upload.zip"
+          notarize "$RUNNER_TEMP/upload.zip"
+          xcrun stapler staple Pingy.app
+          spctl -a -vvv -t exec Pingy.app
+
+          # The volume shows the app beside a link to /Applications, so
+          # installing is a drag rather than running it off the image.
+          dmg="Pingy-$VERSION-arm64.dmg"
+          stage="$RUNNER_TEMP/dmg"
+          rm -rf "$stage" && mkdir "$stage"
+          ditto Pingy.app "$stage/Pingy.app"
+          ln -s /Applications "$stage/Applications"
+          mkdir -p dist
+          hdiutil create -volname Pingy -srcfolder "$stage" -ov -format UDZO "dist/$dmg"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          codesign --keychain "$KEYCHAIN" -s "$SIGN_ID" --timestamp -f "dist/$dmg"
+          notarize "dist/$dmg"
+          xcrun stapler staple "dist/$dmg"
+          spctl -a -vvv -t open --context context:primary-signature "dist/$dmg"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/Pingy-*-arm64.dmg
+          if-no-files-found: error
+
+      - name: Destroy keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" || true
+
+  publish:
+    needs: [metadata, windows, deb, rpm, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+
+      # Bare file names, as sha256sum -c expects. The count catches a job whose
+      # upload silently matched nothing new.
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd out
+          sha256sum * | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 4
+
       - name: Publish
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Built as an array rather than a here-string: a here-string's closing
-          # "@ has to sit at column 0, which ends the YAML block scalar.
-          $hash = (Get-FileHash dist/Pingy-Setup.exe -Algorithm SHA256).Hash.ToLower()
-          $notes = @(
-            'Signed installer for Pingy ${{ github.ref_name }}.'
-            ''
-            'Installs to C:\Program Files\Pingy and adds it to the system PATH, so'
-            'Pingy runs from any terminal.'
-            ''
-            'Silent install:      Pingy-Setup.exe /S'
-            'Skip the PATH entry: /O:add_to_path=off'
-            ''
-            "SHA256: $hash"
-          )
-          $notes -join "`n" | Set-Content release-notes.md -Encoding utf8
+          set -euo pipefail
+          cat > notes.md <<NOTES
+          Pingy ${VERSION}.
 
-          gh release create "${{ github.ref_name }}" dist/Pingy-Setup.exe `
-            --repo "${{ github.repository }}" `
-            --title "Pingy ${{ github.ref_name }}" `
-            --notes-file release-notes.md
+          - Windows: Pingy-Setup-${VERSION}.exe, signed. Silent install with /S; skip the PATH entry with /O:add_to_path=off.
+          - macOS: Pingy-${VERSION}-arm64.dmg, signed and notarized. Apple Silicon only.
+          - Debian and Ubuntu: pingy_${VERSION}_amd64.deb
+          - Fedora: pingy-${VERSION}-1.x86_64.rpm
+
+          SHA256SUMS lists a checksum for each file.
+          NOTES
+          sed -i 's/^ *//' notes.md
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Pingy $VERSION" --notes-file notes.md \
+            out/*

@@ -5,17 +5,21 @@
 
 .DESCRIPTION
     Both values are written by hand in files that cannot include each other:
-    installer.toml is TOML, pingy.manifest is XML, pingy.rc is an RC script and
-    crt_mini.cpp is C++. Nothing makes them agree, so this does, and CI runs it
+    Cargo.toml and installer.toml are separate TOML files, Info.plist is XML
+    and main.rs is Rust. Nothing makes them agree, so this does, and CI runs it
     on every push.
 
+    Cargo.toml is the source the Windows version resource is generated from,
+    so it stands in for the exe's Details tab.
+
     Both failures are silent. A drifted version means the Add/Remove Programs
-    entry and the exe's Details tab disagree, and nobody notices until they are
-    working out which build a machine is running. A drifted AUMID means the
-    running window will not group under its own pinned taskbar icon.
+    entry, the exe's Details tab and the macOS Finder info disagree, and nobody
+    notices until they are working out which build a machine is running. A
+    drifted AUMID means the running window will not group under its own pinned
+    taskbar icon.
 
 .PARAMETER Tag
-    A release tag such as v1.0.1. Compared against the version with any leading
+    A release tag such as v2.0.0. Compared against the version with any leading
     v removed. Omit it outside a release.
 #>
 
@@ -29,18 +33,36 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
-function Get-Declared {
-    param([string]$RelativePath, [string]$Pattern)
+function Read-Source {
+    param([string]$RelativePath)
 
     $path = Join-Path $RepoRoot $RelativePath
     if (-not (Test-Path -LiteralPath $path)) { throw "not found: $RelativePath" }
-
-    $match = Select-String -Path $path -Pattern $Pattern | Select-Object -First 1
-    if (-not $match) { throw "$RelativePath does not match /$Pattern/" }
-    return $match.Matches.Groups[1].Value
+    return [IO.File]::ReadAllText($path)
 }
 
-# 1.0.1, 1.0.1.0 and "1,0,1,0" are the same version written three ways.
+# Matches against the whole file, so a pattern may span lines. (?m) is on, so ^
+# and $ still mean the start and end of a line.
+function Get-Declared {
+    param([string]$RelativePath, [string]$Pattern, [string]$Text)
+
+    if (-not $PSBoundParameters.ContainsKey('Text')) { $Text = Read-Source $RelativePath }
+
+    $match = [regex]::Match($Text, "(?m)$Pattern")
+    if (-not $match.Success) { throw "$RelativePath does not match /$Pattern/" }
+    return $match.Groups[1].Value
+}
+
+# Cargo.toml has a version key in every [dependencies.x] table that spells one
+# out, so only the [package] table counts.
+function Get-CargoPackageTable {
+    $text = Read-Source 'Cargo.toml'
+    $match = [regex]::Match($text, '(?ms)^\[package\]\s*$(.*?)(?=^\[|\z)')
+    if (-not $match.Success) { throw 'Cargo.toml has no [package] table' }
+    return $match.Groups[1].Value
+}
+
+# 2.0.0, 2.0.0.0 and "2,0,0,0" are the same version written three ways.
 function ConvertTo-Quad {
     param([string]$Version)
 
@@ -50,21 +72,17 @@ function ConvertTo-Quad {
     return ($parts[0..3] -join '.')
 }
 
+$plist = 'packaging\macos\Info.plist'
+
 $declared = [ordered]@{
+    'Cargo.toml      [package] version' =
+        Get-Declared 'Cargo.toml' '^\s*version\s*=\s*"([^"]+)"' (Get-CargoPackageTable)
     'installer.toml  product.version' =
         Get-Declared 'installer.toml' '^\s*version\s*=\s*"([^"]+)"'
-    'pingy.manifest  assemblyIdentity' =
-        Get-Declared 'src\pingy.manifest' 'assemblyIdentity\s+version="([^"]+)"'
-    # Keys differ by more than case: PowerShell hash literal keys are
-    # case-insensitive, so FILEVERSION and FileVersion would collide.
-    'pingy.rc        FILEVERSION (numeric)' =
-        Get-Declared 'src\pingy.rc' '^\s*FILEVERSION\s+([\d,\s]+?)\s*$'
-    'pingy.rc        PRODUCTVERSION (numeric)' =
-        Get-Declared 'src\pingy.rc' '^\s*PRODUCTVERSION\s+([\d,\s]+?)\s*$'
-    'pingy.rc        FileVersion (string)' =
-        Get-Declared 'src\pingy.rc' 'VALUE\s+"FileVersion",\s*"([^"]+)"'
-    'pingy.rc        ProductVersion (string)' =
-        Get-Declared 'src\pingy.rc' 'VALUE\s+"ProductVersion",\s*"([^"]+)"'
+    'Info.plist      CFBundleShortVersionString' =
+        Get-Declared $plist '<key>CFBundleShortVersionString</key>\s*<string>([^<]+)</string>'
+    'Info.plist      CFBundleVersion' =
+        Get-Declared $plist '<key>CFBundleVersion</key>\s*<string>([^<]+)</string>'
 }
 
 if ($Tag) {
@@ -72,7 +90,7 @@ if ($Tag) {
 }
 
 foreach ($entry in $declared.GetEnumerator()) {
-    '{0,-34} {1,-10} -> {2}' -f $entry.Key, $entry.Value, (ConvertTo-Quad $entry.Value)
+    '{0,-42} {1,-10} -> {2}' -f $entry.Key, $entry.Value, (ConvertTo-Quad $entry.Value)
 }
 
 $unique = @($declared.Values | ForEach-Object { ConvertTo-Quad $_ } | Sort-Object -Unique)
@@ -85,16 +103,23 @@ Write-Host "`nall version declarations agree: $($unique[0])" -ForegroundColor Gr
 # The AppUserModelID the installer stamps on the shortcut, and the one the
 # process claims for itself at startup, have to be the same string or the
 # window will not group under its own pinned icon.
+$main = Read-Source 'src\main.rs'
+if ($main -notmatch 'SetCurrentProcessExplicitAppUserModelID') {
+    throw 'src\main.rs never calls SetCurrentProcessExplicitAppUserModelID'
+}
+
 $aumid = [ordered]@{
     'installer.toml  product.aumid' =
         Get-Declared 'installer.toml' '^\s*aumid\s*=\s*"([^"]+)"'
-    'crt_mini.cpp    SetCurrentProcessExplicitAppUserModelID' =
-        Get-Declared 'src\crt_mini.cpp' 'SetCurrentProcessExplicitAppUserModelID\(L"([^"]+)"\)'
+    # The string literal rather than the call site: the windows crate takes it
+    # through w!() or a const, and either form leaves the literal in main.rs.
+    'main.rs         AppUserModelID literal' =
+        Get-Declared 'src\main.rs' '"(LockeWerks\.[A-Za-z0-9.]+)"' $main
 }
 
 ''
 foreach ($entry in $aumid.GetEnumerator()) {
-    '{0,-56} {1}' -f $entry.Key, $entry.Value
+    '{0,-42} {1}' -f $entry.Key, $entry.Value
 }
 
 $uniqueAumid = @($aumid.Values | Sort-Object -Unique)

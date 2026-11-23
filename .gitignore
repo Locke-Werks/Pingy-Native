@@ -1,22 +1,18 @@
-# Build output — nobody wants your .obj files, Kevin
-build/
+# Cargo output
+target/
 
-# Crash dumps — these are literally gigabytes of "oops"
-*.dmp
-
-# Visual Studio — the IDE's emotional support files
-.vs/
-*.user
-*.suo
-
-# Crinkler zip — we already have the extracted version
-tools/crinkler.zip
-
-# Installer output and its staging dir — CI builds these, git doesn't hold them
+# Installer output and its staging dir; CI builds these, git does not hold them
 dist/
 stage/
 tools/lwforge.exe
 tools/lwstub.exe
 
-# Python's leavings from the icon generator
-__pycache__/
+# Crash dumps
+*.dmp
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.user
+.qmlls.ini

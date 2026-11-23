@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+# Distros whose net.ipv4.ping_group_range excludes ordinary users refuse the
+# unprivileged ICMP socket, and Pingy then falls back to a raw socket. This
+# capability is what lets that fallback work without running as root.
+if [ "$1" = "configure" ] && command -v setcap >/dev/null 2>&1; then
+    setcap cap_net_raw+ep /usr/bin/pingy || \
+        echo "pingy: could not set cap_net_raw; pings may fail unless ping_group_range includes your group" >&2
+fi
+
+#DEBHELPER#
+
+exit 0

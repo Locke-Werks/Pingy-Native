@@ -1,0 +1,5 @@
+# Shell scripts and Linux packaging files run on Unix; CRLF breaks them.
+*.sh text eol=lf
+packaging/linux/** text eol=lf
+packaging/macos/** text eol=lf
+*.qsb binary

@@ -1,0 +1,81 @@
+[package]
+name = "pingy"
+version = "2.0.0"
+edition = "2024"
+description = "Real-time multi-host ping visualizer with a 3D perspective latency graph"
+license = "MIT"
+authors = ["Locke Werks <archon@lockewerks.com>"]
+repository = "https://github.com/lockewerks/Pingy-Native"
+homepage = "https://github.com/lockewerks/Pingy-Native"
+readme = "README.md"
+build = "build.rs"
+
+[[bin]]
+name = "pingy"
+path = "src/main.rs"
+
+[dependencies]
+cxx = "1.0.205"
+cxx-qt = "0.10.0"
+cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml", "qt_quickcontrols"] }
+directories = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+surge-ping = "0.8"
+
+[build-dependencies]
+cxx-qt-build = "0.10.0"
+embed-resource = "3.0.12"
+qt-build-utils = "0.10.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[package.metadata.deb]
+name = "pingy"
+maintainer = "Locke Werks <archon@lockewerks.com>"
+copyright = "2026, Locke Werks"
+section = "net"
+priority = "optional"
+extended-description = """\
+Pingy pings many hosts at once and draws their latency history as smooth \
+curves on a 3D perspective graph, with live current, average, minimum, \
+maximum and packet loss for each host."""
+depends = "$auto, libcap2-bin, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-window, qml6-module-qtquick-templates, qml6-module-qtqml-workerscript"
+maintainer-scripts = "packaging/linux/debian/"
+assets = [
+    ["target/release/pingy", "usr/bin/", "755"],
+    ["packaging/linux/pingy.desktop", "usr/share/applications/", "644"],
+    ["assets/pingy.png", "usr/share/icons/hicolor/512x512/apps/pingy.png", "644"],
+    ["LICENSE", "usr/share/doc/pingy/copyright", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "pingy"
+license = "MIT"
+summary = "Real-time multi-host ping visualizer"
+post_install_script = "packaging/linux/rpm/post_install.sh"
+assets = [
+    { source = "target/release/pingy", dest = "/usr/bin/pingy", mode = "755" },
+    { source = "packaging/linux/pingy.desktop", dest = "/usr/share/applications/pingy.desktop", mode = "644" },
+    { source = "assets/pingy.png", dest = "/usr/share/icons/hicolor/512x512/apps/pingy.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/pingy/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+qt6-qtdeclarative = "*"
+libcap = "*"
