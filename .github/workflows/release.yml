@@ -311,7 +311,12 @@ jobs:
           # which looks like a bad certificate and is not one.
           for ca in AppleWWDRCAG3 DeveloperIDG2CA AppleRootCA-G3; do
             curl -fsSL -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
-            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN"
+            # Newer runner images already carry these in the search list, and a
+            # duplicate import exits 1. Only that case is tolerated.
+            if ! out=$(security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN" 2>&1); then
+              echo "$out"
+              echo "$out" | grep -q "already exists" || exit 1
+            fi
           done
           printf '%s' "$P12_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
